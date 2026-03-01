@@ -52,95 +52,83 @@ The 7 unnamed fields were discovered through binary diffing between Dell OEM and
 
 The firmware stores the target PCIe generation for each port in HW_MAIN_CFG. These are single-byte fields 0x40 apart (one per physical port).
 
-Values:
-- `0x01` = PCIe Gen3 (8 GT/s)
-- `0x04` = PCIe Gen4 (16 GT/s)
-
-During initialization, the firmware reads these values to configure the PCIe PHY's target link speed. The PHY will attempt to train at the specified generation during link negotiation.
+Values: `0x01` = Gen3 (8 GT/s), `0x04` = Gen4 (16 GT/s).
 
 ### Capability Advertisement Index (FW_BOOT_CFG + 0x0093)
 
-Controls the PCIe Express Capability Structure exposed to the host during enumeration. This determines what the host sees when it reads the card's PCIe capability registers.
-
-Values:
-- `0x45` = Advertise up to Gen3 in Link Capabilities
-- `0x47` = Advertise up to Gen4 in Link Capabilities
-
-Without this change, the host's root complex will not attempt Gen4 link training because the endpoint advertises Gen3 as its maximum supported speed.
+Controls the PCIe Express Capability Structure exposed to the host during enumeration. Values: `0x45` = advertise Gen3, `0x47` = advertise Gen4. Without this, the root complex won't attempt Gen4 link training.
 
 ### Speed Table Entries (HW_MAIN_CFG + 0x0404 through 0x0407)
 
-The firmware has an internal lookup table mapping speed profile indices to PCIe speed/width configurations. Entries at these offsets point to Gen3-specific profiles:
-
-- Entry at +0x0404: Profile index `0x0020` (Gen3 x16)
-- Entry at +0x0406: Profile index `0x0021` (Gen3 x8)
-
-Setting these to `0x0FFF` marks them as invalid/unused. This prevents the link training state machine from falling back to Gen3-only profiles. Without invalidation, the firmware may select a Gen3 fallback profile even when the generation byte is set to Gen4.
+Internal lookup table mapping speed profile indices to PCIe configurations. Profiles 0x0020 (Gen3 x16) and 0x0021 (Gen3 x8) are invalidated by writing 0x0FFF, preventing Gen3 fallback during link training.
 
 ### PCIe Max Speed (HW_BOOT_CFG + 0x0023)
 
-Named `pcie_cfg.pcie_max_speed_supported` in mstflint's config dump. Controls PHY-level link training behavior.
-
-Values:
-- `0x07` = Constrain to Gen3 link training sequences
-- `0x0F` = Enable Gen4 link training (includes Phase 2/3 equalization)
-
-PCIe 4.0 requires additional equalization phases during link training (Phases 2 and 3) to achieve reliable 16 GT/s signaling. This byte enables those phases in the link training state machine. This was the critical missing piece in initial patch attempts — all other Gen4 parameters could be set correctly, but without enabling the Gen4 link training sequence, the PHY would never attempt 16 GT/s.
+Named `pcie_cfg.pcie_max_speed_supported` in mstflint. Value `0x07` constrains to Gen3 link training; `0x0F` enables Gen4 with Phase 2/3 equalization. This was the last byte discovered — without it, all other Gen4 settings are ignored.
 
 ## Device ID: No Gate Exists
 
-Early experiments hypothesized that the ConnectX-5 firmware gates Gen4 behind a Device ID check (0x1017 CX5-EN vs 0x1019 CX5-Ex). **This turned out to be incorrect.** The 8-byte patch enables Gen4 on:
+Early experiments hypothesized that Gen4 was gated behind Device ID (0x1017 CX5-EN vs 0x1019 CX5-Ex). **This turned out to be incorrect.** Confirmed on Dell OEM, HPE OEM, and stock ACAT — all with original 0x1017 Device ID.
 
-- Dell OEM firmware (Device ID 0x1017, PSID DEL0000000015) — tested
-- HPE OEM firmware (Device ID 0x1017) — tested
-- Stock Mellanox ACAT firmware (Device ID 0x1017, PSID MT_0000000183) — tested
+## Dell OEM vs Stock Mellanox Firmware
 
-No Device ID change is required. The early confusion arose because the boot config byte (`pcie_max_speed_supported`) and speed table invalidation hadn't been discovered yet — without those, Gen4 didn't work regardless of Device ID.
+Flashing stock Mellanox ACAT firmware onto Dell OEM cards caused autonegotiation failures. The Dell OEM firmware differs from stock in 95 bytes of functional configuration across four sections. These differences explain why the stock image doesn't work correctly on Dell hardware:
+
+### Why Stock Firmware Fails on Dell Cards
+
+The Dell CX512F cards (0V5DG9, 0TDNNT) use a **Socket Direct** PCIe configuration (2×8 lanes) rather than standard x16. This is reflected in multiple firmware configuration fields. When stock Mellanox firmware (configured for standard x16) is flashed onto Dell hardware, the PCIe port mode mismatch causes the card to fail to negotiate links correctly. Additionally, the PHY equalization coefficients, calibration values, and SFP link tuning parameters are all board-specific — Dell's PCB layout and trace routing require different compensation values than the reference Mellanox design.
+
+### Configuration Differences by Category
+
+| Category | Bytes | Section | What It Controls |
+|----------|-------|---------|-----------------|
+| PHY EQ coefficients | 14 | HW_MAIN_CFG | Signal equalization tuned for Dell PCB layout |
+| PHY tuning | 8 | HW_MAIN_CFG | SFP signal quality parameters |
+| PHY calibration | 4 | HW_MAIN_CFG | Trace compensation (Dell 0x3E26 vs stock 0x30D4) |
+| Speed table profiles | 22 | HW_MAIN_CFG | PCIe speed/width profile mappings |
+| PCIe port mode | 2 | HW_MAIN_CFG | Socket Direct 2×8 vs standard x16 |
+| SFP link tuning | 32 | FW_MAIN_CFG | Link and SFP configuration parameters |
+| FW misc config | 4 | FW_MAIN_CFG | LED behavior, port/link settings |
+| Boot/PCIe config | 7 | FW_BOOT_CFG | Subsystem ID, PCIe subsystem, boot params |
+| Boot config | 3 | HW_BOOT_CFG | Hardware boot parameters |
+
+**Total: 95 bytes** (identity strings like PSID, name, and description excluded).
+
+### Key Measurable Differences
+
+| Parameter | Dell OEM | Stock ACAT |
+|-----------|----------|-----------|
+| PCIe port mode | Socket Direct (2×8) | Standard (1×16) |
+| PHY calibration | 0x3E26 | 0x30D4 |
+| Board power budget | 15,910 mW | 12,500 mW |
+| Subsystem ID | 0x0091 | 0x0061 |
+| Signing keys | Dell keys | Mellanox keys |
+
+The signing key difference means Dell firmware cannot be flashed onto stock Mellanox cards (and vice versa) without using FNP firmware recovery mode to bypass secure boot.
+
+### OEM Firmware Upgrade
+
+The `--upgrade-base` feature addresses this by porting all 95 Dell customization bytes onto a stock Mellanox LTS base image. The Dell OEM profile is built into the tool and was derived by diffing Dell 4554 against ACAT 4554 at the section level. The profile entries are defined as section-relative offsets, making them version-independent.
 
 ## CRC-16 Algorithm
 
-Mellanox uses a non-standard CRC-16 with polynomial `0x100B`. This was determined from the open-source [mstflint](https://github.com/Mellanox/mstflint) project (`mft_utils/crc16.cpp`).
+Mellanox uses a non-standard CRC-16 with polynomial `0x100B`. Sourced from the open-source [mstflint](https://github.com/Mellanox/mstflint) project (`mft_utils/crc16.cpp`).
 
-Algorithm parameters:
-- **Polynomial:** `0x100B` (not a standard CRC-16 variant)
+- **Polynomial:** `0x100B`
 - **Init value:** `0xFFFF`
 - **Processing:** 32-bit big-endian words, MSB-first
 - **Finalization:** 16 additional zero bits shifted through the CRC
 - **Final XOR:** `0xFFFF`
 
-Two CRC fields exist per ITOC entry:
-1. **Section data CRC** (bytes 26-27): CRC over the section's flash data
-2. **ITOC entry CRC** (bytes 30-31): CRC over the first 28 bytes of the ITOC entry (includes the section CRC but excludes the reserved field and entry CRC itself)
-
-The entry CRC must be recalculated after updating the section CRC, since the section CRC is part of the entry CRC's input.
-
-## Dell OEM vs Stock Mellanox Firmware
-
-Dell's OEM firmware for the CX5 (0V5DG9, 0TDNNT) differs from stock Mellanox ACAT in ~2,230 bytes within the configuration region. Key differences:
-
-| Category | Dell | Stock ACAT |
-|----------|------|-----------|
-| PHY EQ coefficients | Gen4-optimized position | Gen3 position |
-| Boot config params | Dell-tuned values | Standard values |
-| PHY calibration | 0x3E26 | 0x30D4 |
-| PCIe width/mode | Socket Direct (2×8) | Standard (1×16) |
-| Subsystem ID | 0x0091 | 0x0061 |
-| Board power budget | 15910 mW | 12500 mW |
-| Signing keys | Dell keys | Mellanox keys |
-
-The signing key difference means Dell firmware cannot be flashed onto stock Mellanox cards (and vice versa) — the card's secure boot checks reject the mismatched keys.
+Two CRC fields per ITOC entry: section data CRC (bytes 26-27) and entry CRC (bytes 30-31, over first 28 bytes of entry). The entry CRC must be recalculated after updating the section CRC.
 
 ## Verification
 
-After patching and flashing, verify with:
-
 ```bash
-# Check PCIe link status
-mlxlink -d mt4119_pciconf0
-# Look for: Speed: 16G, Width: xN
+# Verify image integrity
+mstflint -i patched.bin verify
 
-# Check from host side
+# Check PCIe link status (after flashing and power cycle)
+mlxlink -d mt4119_pciconf0
 lspci -vvs <device> | grep -i "lnksta\|lnkcap"
-# LnkCap should show Speed 16GT/s
-# LnkSta should show Speed 16GT/s
 ```
