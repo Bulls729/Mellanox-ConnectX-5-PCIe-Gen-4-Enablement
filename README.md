@@ -13,10 +13,10 @@ Every ConnectX-5 card uses the same Gen4-capable silicon. NVIDIA segments the pr
 | Card Type | Example OPNs | Status |
 |-----------|-------------|--------|
 | EN dual-port SFP28 | MCX512F-ACAT, Dell 0TDNNT, HPE P12608 | **Tested & working** |
+| EN single-port SFP28 | HPE 842QSFP28 (874253-B21), MCX515A-CCAT | **Tested & working** |
 | EN dual-port QSFP28 | MCX516A-CCAT | **Supported** (CRC-validated) |
 | VPI single-port QSFP28 | MCX555A-ECAT | **Supported** (CRC-validated) |
 | VPI dual-port QSFP28 | MCX556A-ECAT | **Supported** (needs community testing) |
-| EN single-port QSFP28 | MCX515A-CCAT | **Supported** (needs community testing) |
 | Other OEM variants | Lenovo, Supermicro, Cisco | **Supported** (needs community testing) |
 
 ## ⚠️ Before You Start — Back Up Your Firmware
@@ -59,11 +59,20 @@ lspci -vvs <device> | grep -i lnksta
 ### Option B: Upgrade OEM Firmware to Latest LTS + Gen4
 
 ```bash
+# Dell OEM
 python3 cx5_gen4_enable.py \
     --input your_dell_oem.bin \
     --upgrade-base fw-ConnectX5-rel-16_35_8002-MCX512F-ACA.bin \
     --output patched_8002.bin
+
+# HPE OEM
+python3 cx5_gen4_enable.py \
+    --input your_hpe_oem.signed.bin \
+    --upgrade-base fw-ConnectX5-rel-16_35_8008-MCX515A-CCA_Ax_Bx.bin \
+    --output patched_8008.bin
 ```
+
+> **HPE note:** HPE cards can also use Option A (direct patching) without needing a stock base image, since HPE firmware ships with most Gen4 fields already configured — only 2 bytes need patching.
 
 ### Option C: Analyze Without Patching
 

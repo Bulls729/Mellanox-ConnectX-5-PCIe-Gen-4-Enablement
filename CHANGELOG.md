@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] — 2026-07-09
+
+### Added
+- **HPE OEM support** — tool now detects HPE-branded ConnectX-5 cards (PSID prefix `HPE`, subsystem ID 0x46) and displays correct OEM identification
+- **HPE OEM profile** for `--upgrade-base` mode — preserves HPE board-specific configuration (842QSFP28 / 874253-B21 / MCX515A-CCAT) when upgrading to a stock Mellanox LTS base
+- HPE cards can also use direct patch mode (`-i hpe_fw.bin -o patched.bin`) without needing `--upgrade-base`, since HPE firmware ships with port gen and speed tables already at Gen4 values — only 2 bytes (cap_index, max_speed) need patching
+
+### Fixed
+- HPE cards were incorrectly identified as "Stock Mellanox" due to OEM detection only checking for Dell PSID prefix. Now correctly shows "HPE OEM (842QSFP28 / 874253-B21)"
+- Using `--upgrade-base` with an HPE card no longer fails with "Could not detect OEM vendor"
+
+### Notes
+- HPE ConnectX-5 SFP28 cards (874253-B21) ship from the factory with `port1_gen=0x04` (Gen4) and speed tables already invalidated (`0x0FFF`). HPE held back Gen4 only at the PCIe capability advertisement level (`cap_index=0x45`, `max_speed=0x07`). This means direct patching is the simplest path for HPE cards — only 2 bytes change
+- The HPE OEM profile for `--upgrade-base` mode is preliminary. If you encounter issues with the upgrade-base flow on HPE cards, use direct patch mode instead and report the issue
+
 ## [1.1.0] — 2026-03-02
 
 ### Added
